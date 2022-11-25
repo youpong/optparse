@@ -51,7 +51,8 @@
 #  define OPTPARSE_API
 #endif
 
-#include <stdio.h> /* for debug */
+#include <stdio.h>  /* for debug */
+#include <stdlib.h> /* calloc() */
 
 struct optparse {
     char **argv;
@@ -61,6 +62,13 @@ struct optparse {
     char *optarg;
     char errmsg[64];
     int subopt;
+
+    /* private working member */
+    int _optind;
+    char **_options;
+    char **_non_options;
+    char **_options_tail;
+    char **_non_options_tail;
 };
 
 enum optparse_argtype {
@@ -143,12 +151,23 @@ OPTPARSE_API
 void
 optparse_init(struct optparse *options, char **argv)
 {
+    char **p;
+    int len = 0;    
+    for (p = argv; *p; p++) 
+        len++;
+
     options->argv = argv;
     options->permute = 1;
-    options->optind = argv[0] != 0;
+    options->_optind = argv[0] != 0;
+
     options->subopt = 0;
     options->optarg = 0;
     options->errmsg[0] = '\0';
+
+    options->_options = (char **)calloc(len + 1, sizeof(char *));
+    options->_non_options = (char **)calloc(len + 1, sizeof(char *));
+    options->_options_tail = options->_options;
+    options->_non_options_tail = options->_non_options;
 }
 
 static int
@@ -170,35 +189,37 @@ optparse_is_longopt(const char *arg)
 }
 
 static void
-optparse_permute(struct optparse *options, int index)
-{
-    char *nonoption = options->argv[index];
-    int i;
-    for (i = index; i < options->optind - 1; i++)
-        options->argv[i] = options->argv[i + 1];
-    options->argv[options->optind - 1] = nonoption;
-}
-
-static void
-permute(struct optparse *options, int index) {
-    char *tmp = options->argv[options->optind - 1]; /* "-a" */
-    int i;
-    printf("index: %d, options->optind: %d\n", index, options->optind);
-    for (i = options->optind - 1; i != index; i--) {
-        options->argv[i] = options->argv[i - 1];
-        /* i = 5, options->argv[5] = "baz"
-         * i = 4, options->argv[4] = "bar"
-         * i = 3, options->argv[3] = "foo" */
-    }
-    options->argv[index] = tmp;
-}
-
-
-static void
 Print_argv(char *argv[]) {
     char **p;
     for (p  = argv; *p; p++)
         printf("[%ld]\"%s\"\n", p - argv, *p);
+}
+
+/* TODO */
+static void
+optparse_permute(struct optparse *options, int index)
+{
+    char *nonoption = options->argv[index];
+    int i;
+    for (i = index; i < options->_optind - 1; i++)
+        options->argv[i] = options->argv[i + 1];
+    options->argv[options->_optind - 1] = nonoption;
+}
+
+static void
+permute(struct optparse *options, int index) {
+    char **p = options->argv + 1; /* TODO */
+    char **q;
+
+    printf("_options:\n");
+    Print_argv(options->_options);
+    printf("_non_options:\n");
+    Print_argv(options->_non_options);
+    for (q = options->_options; *q; q++)
+        *p++ = *q;
+    options->optind = p - options->argv;
+    for (q = options->_non_options; *q; q++)
+        *p++ = *q;
 }
 
 static int
@@ -221,21 +242,21 @@ optparse(struct optparse *options, const char *optstring)
 {
     int type;
     char *next;
-    char *option = options->argv[options->optind];
+    char *option = options->argv[options->_optind];
     options->errmsg[0] = '\0';
     options->optopt = 0;
     options->optarg = 0;
     if (option == 0) {
         return -1;
     } else if (optparse_is_dashdash(option)) {
-        options->optind++; /* consume "--" */
+        options->_optind++; /* consume "--" */
         return -1;
     } else if (!optparse_is_shortopt(option)) {
         if (options->permute) {
-            int index = options->optind++;
+            int index = options->_optind++;
             int r = optparse(options, optstring);
             optparse_permute(options, index);
-            options->optind--;
+            options->_optind--;
             return r;
         } else {
             return -1;
@@ -244,12 +265,12 @@ optparse(struct optparse *options, const char *optstring)
     option += options->subopt + 1;
     options->optopt = option[0];
     type = optparse_argtype(optstring, option[0]);
-    next = options->argv[options->optind + 1];
+    next = options->argv[options->_optind + 1];
     switch (type) {
     case -1: {
         char str[2] = {0, 0};
         str[0] = option[0];
-        options->optind++;
+        options->_optind++;
         return optparse_error(options, OPTPARSE_MSG_INVALID, str);
     }
     case OPTPARSE_NONE:
@@ -257,17 +278,20 @@ optparse(struct optparse *options, const char *optstring)
             options->subopt++;
         } else {
             options->subopt = 0;
-            options->optind++;
+            *(options->_options_tail++) = options->argv[options->_optind];
+            options->_optind++;
         }
         return option[0];
     case OPTPARSE_REQUIRED:
         options->subopt = 0;
-        options->optind++;
+        *(options->_options_tail++) = options->argv[options->_optind];        
+        options->_optind++;
         if (option[1]) {
             options->optarg = option + 1;
         } else if (next != 0) {
             options->optarg = next;
-            options->optind++;
+            *(options->_options_tail++) = options->argv[options->_optind];
+            options->_optind++;
         } else {
             char str[2] = {0, 0};
             str[0] = option[0];
@@ -277,7 +301,8 @@ optparse(struct optparse *options, const char *optstring)
         return option[0];
     case OPTPARSE_OPTIONAL:
         options->subopt = 0;
-        options->optind++;
+        *(options->_options_tail++) = options->argv[options->_optind];        
+        options->_optind++;
         if (option[1])
             options->optarg = option + 1;
         else
@@ -376,12 +401,12 @@ optparse_long(struct optparse *options,
     char *option;
 
     for (;;) {
-        option= options->argv[options->optind];
+        option = options->argv[options->_optind];
         if (option == 0) {
             ret = -1; 
             break; 
         } else if (optparse_is_dashdash(option)) {
-            options->optind++; /* consume "--" */
+            options->_optind++; /* consume "--" */
             ret = -1; 
             break;
         } else if (optparse_is_shortopt(option)) {
@@ -391,8 +416,9 @@ optparse_long(struct optparse *options,
             options->errmsg[0] = '\0';
             options->optopt = 0;
             options->optarg = 0;
+            *(options->_options_tail++) = option;
             option += 2; /* skip "--" */
-            options->optind++;
+            options->_optind++;
             for (i = 0; !optparse_longopts_end(longopts, i); i++) {
                 const char *name = longopts[i].longname;
                 if (optparse_longopts_match(name, option)) {
@@ -407,12 +433,13 @@ optparse_long(struct optparse *options,
                     } if (arg != 0) {
                         options->optarg = arg;
                     } else if (longopts[i].argtype == OPTPARSE_REQUIRED) {
-                        options->optarg = options->argv[options->optind];
+                        options->optarg = options->argv[options->_optind];
+                        *(options->_options_tail++) = options->optarg;
                         if (options->optarg == 0) {
                             ret = optparse_error(options, OPTPARSE_MSG_MISSING, name);
                             goto finally;
                         } else
-                            options->optind++;
+                            options->_optind++;
                     }
                     ret = options->optopt;
                     goto finally;
@@ -428,16 +455,20 @@ optparse_long(struct optparse *options,
         }
 
         if (permute_index == -1) {
-            permute_index = options->optind;
+            permute_index = options->_optind;
         }
-        options->optind++;
+        *(options->_non_options_tail++) = option;
+        options->_optind++;
     }
 
  finally:
+    options->optind = options->_optind;
     if (permute_index != -1) {
         permute(options, permute_index);
+        printf("permuted\n");
         Print_argv(options->argv);
-        options->optind--; /* TODO ? */
+        printf("optoins->optind: %d, options->_optind: %d\n",
+               options->optind, options->_optind);
     }
     return ret;
 }
