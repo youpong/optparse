@@ -462,7 +462,8 @@ optparse_long(struct optparse *options,
     }
 
  finally:
-    options->optind = options->_optind;
+    if (options->_non_options[0] == NULL)
+        options->optind = options->_optind;
     if (permute_index != -1) {
         permute(options, permute_index);
         printf("permuted\n");
